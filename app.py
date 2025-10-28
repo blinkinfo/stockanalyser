@@ -25,38 +25,55 @@ def analyze_stock():
         # Fetch stock data
         stock = yf.Ticker(symbol)
 
-        # Get historical data (1 year)
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=365)
-        hist_data = stock.history(start=start_date, end=end_date)
+        # Get historical data (1 year) - using period parameter is more reliable
+        hist_data = stock.history(period="1y")
 
         if hist_data.empty:
-            return jsonify({'error': f'No data found for symbol: {symbol}'}), 404
+            # Try alternative approach
+            hist_data = stock.history(period="max")
+            if len(hist_data) > 252:  # More than 1 year of trading days
+                hist_data = hist_data.tail(252)  # Get last year
+
+            if hist_data.empty:
+                return jsonify({'error': f'No data found for symbol: {symbol}. Please verify the symbol is correct.'}), 404
 
         # Get stock info
         info = stock.info
 
-        # Prepare summary data
+        # Check if we got valid info
+        if not info or len(info) < 5:
+            # If info is empty, at least we have historical data
+            info = {}
+
+        # Prepare summary data - use latest data from history if info is incomplete
+        latest = hist_data.iloc[-1] if not hist_data.empty else None
+
         summary = {
             'symbol': symbol,
-            'name': info.get('longName', 'N/A'),
-            'current_price': info.get('currentPrice', info.get('regularMarketPrice', 'N/A')),
-            'previous_close': info.get('previousClose', 'N/A'),
-            'open': info.get('open', 'N/A'),
-            'day_high': info.get('dayHigh', 'N/A'),
-            'day_low': info.get('dayLow', 'N/A'),
-            'volume': info.get('volume', 'N/A'),
+            'name': info.get('longName', info.get('shortName', symbol)),
+            'current_price': info.get('currentPrice', info.get('regularMarketPrice', latest['Close'] if latest is not None else 'N/A')),
+            'previous_close': info.get('previousClose', hist_data.iloc[-2]['Close'] if len(hist_data) > 1 else 'N/A'),
+            'open': info.get('open', latest['Open'] if latest is not None else 'N/A'),
+            'day_high': info.get('dayHigh', latest['High'] if latest is not None else 'N/A'),
+            'day_low': info.get('dayLow', latest['Low'] if latest is not None else 'N/A'),
+            'volume': info.get('volume', int(latest['Volume']) if latest is not None else 'N/A'),
             'market_cap': info.get('marketCap', 'N/A'),
             'pe_ratio': info.get('trailingPE', 'N/A'),
             'dividend_yield': info.get('dividendYield', 'N/A'),
-            '52_week_high': info.get('fiftyTwoWeekHigh', 'N/A'),
-            '52_week_low': info.get('fiftyTwoWeekLow', 'N/A'),
-            'avg_volume': info.get('averageVolume', 'N/A'),
+            '52_week_high': info.get('fiftyTwoWeekHigh', float(hist_data['High'].max()) if not hist_data.empty else 'N/A'),
+            '52_week_low': info.get('fiftyTwoWeekLow', float(hist_data['Low'].min()) if not hist_data.empty else 'N/A'),
+            'avg_volume': info.get('averageVolume', int(hist_data['Volume'].mean()) if not hist_data.empty else 'N/A'),
         }
 
         # Prepare table data
         hist_data_reset = hist_data.reset_index()
-        hist_data_reset['Date'] = hist_data_reset['Date'].dt.strftime('%Y-%m-%d')
+        # Handle timezone-aware datetime
+        if 'Date' in hist_data_reset.columns:
+            hist_data_reset['Date'] = pd.to_datetime(hist_data_reset['Date']).dt.strftime('%Y-%m-%d')
+        elif 'Datetime' in hist_data_reset.columns:
+            hist_data_reset['Date'] = pd.to_datetime(hist_data_reset['Datetime']).dt.strftime('%Y-%m-%d')
+        else:
+            hist_data_reset['Date'] = hist_data_reset.index.strftime('%Y-%m-%d')
 
         table_data = hist_data_reset[['Date', 'Open', 'High', 'Low', 'Close', 'Volume']].to_dict('records')
 
@@ -123,16 +140,26 @@ def download_csv(symbol):
 
         # Fetch stock data
         stock = yf.Ticker(symbol)
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=365)
-        hist_data = stock.history(start=start_date, end=end_date)
+        hist_data = stock.history(period="1y")
 
         if hist_data.empty:
-            return jsonify({'error': f'No data found for symbol: {symbol}'}), 404
+            # Try alternative approach
+            hist_data = stock.history(period="max")
+            if len(hist_data) > 252:
+                hist_data = hist_data.tail(252)
+
+            if hist_data.empty:
+                return jsonify({'error': f'No data found for symbol: {symbol}'}), 404
 
         # Prepare CSV data
         hist_data_reset = hist_data.reset_index()
-        hist_data_reset['Date'] = hist_data_reset['Date'].dt.strftime('%Y-%m-%d')
+        # Handle timezone-aware datetime
+        if 'Date' in hist_data_reset.columns:
+            hist_data_reset['Date'] = pd.to_datetime(hist_data_reset['Date']).dt.strftime('%Y-%m-%d')
+        elif 'Datetime' in hist_data_reset.columns:
+            hist_data_reset['Date'] = pd.to_datetime(hist_data_reset['Datetime']).dt.strftime('%Y-%m-%d')
+        else:
+            hist_data_reset['Date'] = hist_data_reset.index.strftime('%Y-%m-%d')
         csv_data = hist_data_reset[['Date', 'Open', 'High', 'Low', 'Close', 'Volume']]
 
         # Create CSV in memory
