@@ -6,12 +6,39 @@ import plotly.utils
 import json
 from datetime import datetime, timedelta
 import io
+import logging
 
 app = Flask(__name__)
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 @app.route('/')
 def index():
     return render_template('index.html')
+
+@app.route('/health')
+def health_check():
+    """Health check endpoint to verify yfinance is working"""
+    try:
+        # Try to fetch a simple stock
+        test = yf.Ticker("AAPL")
+        data = test.history(period="5d", auto_adjust=False)
+
+        return jsonify({
+            'status': 'healthy',
+            'yfinance_version': yf.__version__,
+            'test_data_rows': len(data),
+            'message': 'Yahoo Finance API is accessible'
+        }), 200
+    except Exception as e:
+        return jsonify({
+            'status': 'unhealthy',
+            'yfinance_version': yf.__version__,
+            'error': str(e),
+            'message': 'Yahoo Finance API may be unavailable'
+        }), 500
 
 @app.route('/analyze', methods=['POST'])
 def analyze_stock():
@@ -22,27 +49,64 @@ def analyze_stock():
         if not symbol:
             return jsonify({'error': 'Please provide a stock symbol'}), 400
 
+        logger.info(f"Analyzing stock: {symbol}")
+
         # Fetch stock data
         stock = yf.Ticker(symbol)
 
-        # Get historical data (1 year) - using period parameter is more reliable
-        hist_data = stock.history(period="1y")
+        # Try multiple methods to get historical data
+        hist_data = None
 
-        if hist_data.empty:
-            # Try alternative approach
-            hist_data = stock.history(period="max")
-            if len(hist_data) > 252:  # More than 1 year of trading days
-                hist_data = hist_data.tail(252)  # Get last year
+        # Method 1: period="1y"
+        try:
+            logger.info(f"Method 1: Fetching with period='1y'")
+            hist_data = stock.history(period="1y", auto_adjust=False)
+            logger.info(f"Method 1 result: {len(hist_data)} rows")
+        except Exception as e:
+            logger.error(f"Method 1 failed: {str(e)}")
 
-            if hist_data.empty:
-                return jsonify({'error': f'No data found for symbol: {symbol}. Please verify the symbol is correct.'}), 404
+        # Method 2: Try with different parameters
+        if hist_data is None or hist_data.empty:
+            try:
+                logger.info(f"Method 2: Fetching with period='1y', interval='1d'")
+                hist_data = stock.history(period="1y", interval="1d", actions=False)
+                logger.info(f"Method 2 result: {len(hist_data)} rows")
+            except Exception as e:
+                logger.error(f"Method 2 failed: {str(e)}")
+
+        # Method 3: Try downloading with yfinance.download
+        if hist_data is None or hist_data.empty:
+            try:
+                logger.info(f"Method 3: Using yf.download()")
+                hist_data = yf.download(symbol, period="1y", progress=False, auto_adjust=False)
+                logger.info(f"Method 3 result: {len(hist_data)} rows")
+            except Exception as e:
+                logger.error(f"Method 3 failed: {str(e)}")
+
+        # Method 4: Try with date range
+        if hist_data is None or hist_data.empty:
+            try:
+                logger.info(f"Method 4: Using date range")
+                end_date = datetime.now()
+                start_date = end_date - timedelta(days=365)
+                hist_data = yf.download(symbol, start=start_date, end=end_date, progress=False)
+                logger.info(f"Method 4 result: {len(hist_data)} rows")
+            except Exception as e:
+                logger.error(f"Method 4 failed: {str(e)}")
+
+        if hist_data is None or hist_data.empty:
+            logger.error(f"All methods failed for symbol: {symbol}")
+            return jsonify({'error': f'No data found for symbol: {symbol}. Please verify the symbol is correct. The Yahoo Finance API may be temporarily unavailable.'}), 404
+
+        logger.info(f"Successfully fetched {len(hist_data)} rows of data for {symbol}")
 
         # Get stock info
-        info = stock.info
-
-        # Check if we got valid info
-        if not info or len(info) < 5:
-            # If info is empty, at least we have historical data
+        info = {}
+        try:
+            info = stock.info
+            logger.info(f"Stock info fetched: {len(info)} fields")
+        except Exception as e:
+            logger.error(f"Failed to fetch stock info: {str(e)}")
             info = {}
 
         # Prepare summary data - use latest data from history if info is incomplete
@@ -138,18 +202,26 @@ def download_csv(symbol):
     try:
         symbol = symbol.upper().strip()
 
-        # Fetch stock data
-        stock = yf.Ticker(symbol)
-        hist_data = stock.history(period="1y")
+        logger.info(f"Downloading CSV for: {symbol}")
 
-        if hist_data.empty:
-            # Try alternative approach
-            hist_data = stock.history(period="max")
-            if len(hist_data) > 252:
-                hist_data = hist_data.tail(252)
+        # Fetch stock data using multiple methods
+        hist_data = None
 
-            if hist_data.empty:
-                return jsonify({'error': f'No data found for symbol: {symbol}'}), 404
+        try:
+            stock = yf.Ticker(symbol)
+            hist_data = stock.history(period="1y", auto_adjust=False)
+        except Exception as e:
+            logger.error(f"Download method 1 failed: {str(e)}")
+
+        if hist_data is None or hist_data.empty:
+            try:
+                hist_data = yf.download(symbol, period="1y", progress=False, auto_adjust=False)
+            except Exception as e:
+                logger.error(f"Download method 2 failed: {str(e)}")
+
+        if hist_data is None or hist_data.empty:
+            logger.error(f"Failed to download data for: {symbol}")
+            return jsonify({'error': f'No data found for symbol: {symbol}'}), 404
 
         # Prepare CSV data
         hist_data_reset = hist_data.reset_index()
