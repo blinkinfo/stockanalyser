@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stock Analyser</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Stock Analyser</h1>
+            <p>Get comprehensive financial data from Yahoo Finance</p>
+        </header>
+
+        <div class="search-section">
+            <div class="search-box">
+                <input type="text" id="stockSymbol" placeholder="Enter stock symbol (e.g., AAPL, TSLA, GOOGL)" />
+                <button id="analyzeBtn" onclick="analyzeStock()">Analyze Stock</button>
+            </div>
+            <div id="loading" class="loading" style="display: none;">
+                <div class="spinner"></div>
+                <p>Fetching stock data...</p>
+            </div>
+            <div id="error" class="error" style="display: none;"></div>
+        </div>
+
+        <div id="results" style="display: none;">
+            <!-- Summary Section -->
+            <div class="summary-section">
+                <h2 id="stockName"></h2>
+                <div class="summary-grid">
+                    <div class="summary-item">
+                        <span class="label">Current Price</span>
+                        <span class="value" id="currentPrice">-</span>
+                    </div>
+                    <div class="summary-item">
+                        <span class="label">Previous Close</span>
+                        <span class="value" id="previousClose">-</span>
+                    </div>
+                    <div class="summary-item">
+                        <span class="label">Open</span>
+                        <span class="value" id="open">-</span>
+                    </div>
+                    <div class="summary-item">
+                        <span class="label">Day High</span>
+                        <span class="value" id="dayHigh">-</span>
+                    </div>
+                    <div class="summary-item">
+                        <span class="label">Day Low</span>
+                        <span class="value" id="dayLow">-</span>
+                    </div>
+                    <div class="summary-item">
+                        <span class="label">Volume</span>
+                        <span class="value" id="volume">-</span>
+                    </div>
+                    <div class="summary-item">
+                        <span class="label">Market Cap</span>
+                        <span class="value" id="marketCap">-</span>
+                    </div>
+                    <div class="summary-item">
+                        <span class="label">P/E Ratio</span>
+                        <span class="value" id="peRatio">-</span>
+                    </div>
+                    <div class="summary-item">
+                        <span class="label">52 Week High</span>
+                        <span class="value" id="weekHigh">-</span>
+                    </div>
+                    <div class="summary-item">
+                        <span class="label">52 Week Low</span>
+                        <span class="value" id="weekLow">-</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Chart Section -->
+            <div class="chart-section">
+                <div class="section-header">
+                    <h2>Price Chart (Last 12 Months)</h2>
+                </div>
+                <div id="chart"></div>
+            </div>
+
+            <!-- Table Section -->
+            <div class="table-section">
+                <div class="section-header">
+                    <h2>Historical Data</h2>
+                    <button id="downloadBtn" onclick="downloadCSV()" class="download-btn">Download CSV</button>
+                </div>
+                <div class="table-wrapper">
+                    <table id="dataTable">
+                        <thead>
+                            <tr>
+                                <th>Date</th>
+                                <th>Open</th>
+                                <th>High</th>
+                                <th>Low</th>
+                                <th>Close</th>
+                                <th>Volume</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tableBody">
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentSymbol = '';
+
+        // Allow Enter key to trigger analysis
+        document.getElementById('stockSymbol').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                analyzeStock();
+            }
+        });
+
+        function formatNumber(num) {
+            if (num === 'N/A' || num === null || num === undefined) return 'N/A';
+            if (typeof num === 'number') {
+                return num.toLocaleString('en-US', {maximumFractionDigits: 2});
+            }
+            return num;
+        }
+
+        function formatCurrency(num) {
+            if (num === 'N/A' || num === null || num === undefined) return 'N/A';
+            if (typeof num === 'number') {
+                return '$' + num.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+            }
+            return num;
+        }
+
+        function formatMarketCap(num) {
+            if (num === 'N/A' || num === null || num === undefined) return 'N/A';
+            if (typeof num === 'number') {
+                if (num >= 1e12) {
+                    return '$' + (num / 1e12).toFixed(2) + 'T';
+                } else if (num >= 1e9) {
+                    return '$' + (num / 1e9).toFixed(2) + 'B';
+                } else if (num >= 1e6) {
+                    return '$' + (num / 1e6).toFixed(2) + 'M';
+                }
+                return '$' + num.toLocaleString('en-US');
+            }
+            return num;
+        }
+
+        function formatPercent(num) {
+            if (num === 'N/A' || num === null || num === undefined) return 'N/A';
+            if (typeof num === 'number') {
+                return (num * 100).toFixed(2) + '%';
+            }
+            return num;
+        }
+
+        async function analyzeStock() {
+            const symbol = document.getElementById('stockSymbol').value.trim().toUpperCase();
+            if (!symbol) {
+                showError('Please enter a stock symbol');
+                return;
+            }
+
+            currentSymbol = symbol;
+
+            // Show loading, hide results and errors
+            document.getElementById('loading').style.display = 'block';
+            document.getElementById('results').style.display = 'none';
+            document.getElementById('error').style.display = 'none';
+
+            try {
+                const response = await fetch('/analyze', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ symbol: symbol })
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Failed to fetch stock data');
+                }
+
+                displayResults(data);
+
+            } catch (error) {
+                showError(error.message);
+            } finally {
+                document.getElementById('loading').style.display = 'none';
+            }
+        }
+
+        function displayResults(data) {
+            const { summary, table_data, chart } = data;
+
+            // Update summary
+            document.getElementById('stockName').textContent = `${summary.name} (${summary.symbol})`;
+            document.getElementById('currentPrice').textContent = formatCurrency(summary.current_price);
+            document.getElementById('previousClose').textContent = formatCurrency(summary.previous_close);
+            document.getElementById('open').textContent = formatCurrency(summary.open);
+            document.getElementById('dayHigh').textContent = formatCurrency(summary.day_high);
+            document.getElementById('dayLow').textContent = formatCurrency(summary.day_low);
+            document.getElementById('volume').textContent = formatNumber(summary.volume);
+            document.getElementById('marketCap').textContent = formatMarketCap(summary.market_cap);
+            document.getElementById('peRatio').textContent = formatNumber(summary.pe_ratio);
+            document.getElementById('weekHigh').textContent = formatCurrency(summary['52_week_high']);
+            document.getElementById('weekLow').textContent = formatCurrency(summary['52_week_low']);
+
+            // Update table
+            const tableBody = document.getElementById('tableBody');
+            tableBody.innerHTML = '';
+            table_data.forEach(row => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td>${row.Date}</td>
+                    <td>$${row.Open.toFixed(2)}</td>
+                    <td>$${row.High.toFixed(2)}</td>
+                    <td>$${row.Low.toFixed(2)}</td>
+                    <td>$${row.Close.toFixed(2)}</td>
+                    <td>${row.Volume.toLocaleString()}</td>
+                `;
+                tableBody.appendChild(tr);
+            });
+
+            // Update chart
+            const chartData = JSON.parse(chart);
+            Plotly.newPlot('chart', chartData.data, chartData.layout, {responsive: true});
+
+            // Show results
+            document.getElementById('results').style.display = 'block';
+        }
+
+        function showError(message) {
+            const errorDiv = document.getElementById('error');
+            errorDiv.textContent = message;
+            errorDiv.style.display = 'block';
+            document.getElementById('results').style.display = 'none';
+        }
+
+        function downloadCSV() {
+            if (currentSymbol) {
+                window.location.href = `/download/${currentSymbol}`;
+            }
+        }
+    </script>
+</body>
+</html>
